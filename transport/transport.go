@@ -2,25 +2,65 @@ package transport
 
 import (
     "github.com/stefankopieczek/gossip/base"
-    "github.com/stefankopieczek/gossip/parser"
+    "github.com/stefankopieczek/gossip/log"
 )
 
 import (
     "fmt"
-    "net"
     "sync"
 )
+
+const c_LISTENER_QUEUE_SIZE int = 1000
 
 /**
   Temporary implementation of a transport layer for SIP messages using UDP.
   This will be heavily revised, and should not be relied upon.
 */
 
-type SipTransportManager interface {
-	Start()
-	Send(message *base.SipMessage)
-	GetChannel()
+type Manager interface {
+	Listen()
+	Send(message base.SipMessage)
+	GetChannel() chan base.SipMessage
 	Stop()
+}
+
+type notifier struct {
+	listeners map[listener]bool
+	listenerLock sync.Mutex
+}
+
+func (n *notifier) register(l listener) {
+    if n.listeners == nil {
+        n.listeners = make(map[listener]bool)
+    }
+	n.listenerLock.Lock()
+	n.listeners[l] = true
+	n.listenerLock.Unlock()
+}
+
+func (n *notifier) getChannel() (l listener) {
+    c := make(chan base.SipMessage, c_LISTENER_QUEUE_SIZE)
+    n.register(c)
+    return c
+}
+
+func (n *notifier) notifyAll(msg base.SipMessage) {
+	// Dispatch the message to all registered listeners.
+	// If the listener is a closed channel, remove it from the list.
+	deadListeners := make([]chan base.SipMessage, 0)
+	n.listenerLock.Lock()
+    log.Debug(fmt.Sprintf("Notify %d listeners of message", len(n.listeners)))
+	for listener := range n.listeners {
+		sent := listener.notify(msg)
+		if !sent {
+			deadListeners = append(deadListeners, listener)
+		}
+	}
+	for _, deadListener := range deadListeners {
+        log.Debug(fmt.Sprintf("Expiring listener %#v", deadListener))
+		delete(n.listeners, deadListener)
+	}
+	n.listenerLock.Unlock()
 }
 
 type listener chan base.SipMessage
@@ -28,83 +68,8 @@ type listener chan base.SipMessage
 // notify tries to send a message to the listener.
 // If the underlying channel has been closed by the receiver, return 'false';
 // otherwise, return true.
-func (l listener) notify(message base.SipMessage) (ok bool) {
+func (c listener) notify(message base.SipMessage) (ok bool) {
 	defer func() { recover() }()
-	l <- message
+	c <- message
 	return true
-}
-
-type UdpTransportManager struct {
-	address      *net.UDPAddr
-	conn         *net.UDPConn
-	listeners    map[listener]bool
-	listenerLock sync.Mutex
-}
-
-func NewUdpTransportManager(address *net.UDPAddr) (*UdpTransportManager, error) {
-	listeners := make(map[listener]bool, 0)
-	var listenerLock sync.Mutex
-	manager := UdpTransportManager{address, nil, listeners, listenerLock}
-	return &manager, nil
-}
-
-func (transport *UdpTransportManager) Start() error {
-	var err error = nil
-	transport.conn, err = net.ListenUDP("udp", transport.address)
-
-	if err == nil {
-		go transport.listen()
-	}
-
-	return err
-}
-
-func (transport *UdpTransportManager) GetChannel() (c chan base.SipMessage) {
-	c = make(chan base.SipMessage)
-
-	transport.listenerLock.Lock()
-	transport.listeners[c] = true
-	transport.listenerLock.Unlock()
-
-	return c
-}
-
-func (transport *UdpTransportManager) listen() {
-	fmt.Printf("Listening.\n")
-	parser := parser.NewMessageParser()
-	buffer := make([]byte, 65507)
-	for {
-		num, _, err := transport.conn.ReadFromUDP(buffer) // TODO: Do this properly.
-		if err != nil {
-			panic(err)
-		}
-
-		pkt := append([]byte(nil), buffer[:num]...)
-		go transport.handlePacket(pkt, parser)
-	}
-}
-
-func (transport *UdpTransportManager) handlePacket(pkt []byte, parser parser.MessageParser) {
-	message, err := parser.ParseMessage(pkt)
-
-	// TODO: Test hack
-	if err != nil {
-		fmt.Printf("Error:\n%s\n\n", err.Error())
-		return
-	}
-
-	// Dispatch the message to all registered listeners.
-	// If the listener is a closed channel, remove it from the list.
-	deadListeners := make([]chan base.SipMessage, 0)
-	transport.listenerLock.Lock()
-	for listener := range transport.listeners {
-		sent := listener.notify(message)
-		if !sent {
-			deadListeners = append(deadListeners, listener)
-		}
-	}
-	for _, deadListener := range deadListeners {
-		delete(transport.listeners, deadListener)
-	}
-	transport.listenerLock.Unlock()
 }
