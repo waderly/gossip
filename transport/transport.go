@@ -7,7 +7,9 @@ import (
 
 import (
     "fmt"
+    "net"
     "sync"
+    "time"
 )
 
 const c_LISTENER_QUEUE_SIZE int = 1000
@@ -72,4 +74,40 @@ func (c listener) notify(message base.SipMessage) (ok bool) {
 	defer func() { recover() }()
 	c <- message
 	return true
+}
+
+// Fields of connTable should only be modified by the dedicated goroutine called by Init().
+// All other callers should use connTable's associated public methods to access it.
+type connTable struct {
+    conns map[string]net.Conn
+    timers map[string]time.Timer
+    update chan connUpdate
+    expire chan string
+    stop chan bool
+}
+
+func (table *connTable) Init() {
+    table.conns = make(map[string]net.Conn)
+    table.timers = make(map[string]time.Timer)
+
+    go func(t *connTable) {
+        // Select from timers, stop chan, and update chan.
+    }(table)
+}
+
+func (table *connTable) Stop() {
+    table.stop <- true
+}
+
+func (table *connTable) Update(conn net.Conn, addr string) {
+    table.update <- connUpdate{conn, addr}
+}
+
+func (table *connTable) Expire(addr string) {
+    table.expire <- addr
+}
+
+type connUpdate struct {
+    conn net.Conn
+    address string
 }
