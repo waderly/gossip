@@ -22,7 +22,7 @@ const c_SOCKET_EXPIRY time.Duration = time.Hour
 
 type Manager interface {
 	Listen()
-	Send(message base.SipMessage)
+	Send(addr string, message base.SipMessage) error
 	GetChannel() chan base.SipMessage
 	Stop()
 }
@@ -91,10 +91,14 @@ type connManager struct {
     stop chan bool
 }
 
+// Create a new connection table.
 func (t *connTable) Init() {
     t.conns = make(map[string]*connManager)
 }
 
+// Push a connection to the connection table, registered under a specific address.
+// If it is a new connection, start the socket expiry timer.
+// If it is a known connection, restart the timer.
 func (t *connTable) Notify(addr string, conn net.Conn) {
     if t.stopped {
         log.Debug("Ignoring conn notification for address %s after table stop.")
@@ -141,11 +145,22 @@ func (t *connTable) Notify(addr string, conn net.Conn) {
     }
 }
 
+// Return an existing open socket for the given address, or nil if no such socket
+// exists.
 func (t *connTable) GetConn(addr string) net.Conn {
     manager, ok := t.conns[addr]
     if ok {
         return manager.conn
     } else {
         return nil
+    }
+}
+
+// Close all sockets and stop socket management.
+// The table cannot be restarted after Stop() has been called, and GetConn() will return nil.
+func (t *connTable) Stop() {
+    t.stopped = true
+    for _, manager := range(t.conns) {
+        manager.stop <- true
     }
 }
